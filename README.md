@@ -12,11 +12,19 @@ view — nothing is ever written to a permanent database.
 
 ## Install
 
+**macOS / Linux:**
+
 ```sh
 curl -fsSL https://sharetoai.app/install.sh | sh
 ```
 
-Or with Go installed:
+**Windows:** download `sharetoai-windows-amd64.exe` from the
+[latest release](https://github.com/bahaeddinmselmi/sharetoai-cli/releases/latest)
+and put it somewhere on your `PATH` (the install script above targets
+macOS/Linux only — plain Git Bash / cmd / PowerShell won't run it, use WSL if
+you want the one-liner instead).
+
+**With Go installed (any OS):**
 
 ```sh
 go install github.com/bahaeddinmselmi/sharetoai-cli@latest
