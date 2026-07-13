@@ -18,33 +18,35 @@ view — nothing is ever written to a permanent database.
 curl -fsSL https://sharetoai.app/install.sh | sh
 ```
 
-**Windows:** download `sharetoai-windows-amd64.exe` from the
-[latest release](https://github.com/bahaeddinmselmi/sharetoai-cli/releases/latest)
-and put it somewhere on your `PATH` (the install script above targets
-macOS/Linux only — plain Git Bash / cmd / PowerShell won't run it, use WSL if
-you want the one-liner instead).
+**Windows (PowerShell):**
+
+```powershell
+irm https://sharetoai.app/install.ps1 | iex
+```
 
 **With Go installed (any OS):**
 
 ```sh
-go install github.com/bahaeddinmselmi/sharetoai-cli@latest
+go install github.com/bahaeddinmselmi/sharetoai-cli/cmd/sharetoai@latest
 ```
 
-The binary installs as `sharetoai`.
+The binary installs as `sharetoai` in `$(go env GOPATH)/bin` (typically
+`~/go/bin` or `%USERPROFILE%\go\bin` on Windows) — make sure that directory
+is on your `PATH`. **If you just added it to `PATH`, open a new terminal
+window** — an already-running shell won't pick up the change.
 
 ## Usage
 
 ```sh
-# 1. Generate a CLI API key from https://sharetoai.app/account
-#    ("CLI API key" section), then store it locally:
-sharetoai login
-
-# 2. From inside any project directory with a Claude Code session:
-sharetoai push
+sharetoai login   # opens your browser to sign in — no key to copy or paste
+sharetoai push    # from inside any project directory with a Claude Code session
 ```
 
-`push` prints the resulting one-time link and opens it in your default
-browser.
+`sharetoai login` uses a device-authorization flow, the same shape as `gh
+auth login`: it opens `sharetoai.app/cli-login` in your browser, waits for
+you to sign in there (magic link, no password), and picks up the resulting
+key automatically. `push` prints the resulting one-time link and opens it
+in your default browser.
 
 ## How it finds a session
 
