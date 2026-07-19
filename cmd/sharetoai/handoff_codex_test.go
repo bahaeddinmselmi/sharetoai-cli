@@ -5,10 +5,19 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 )
+
+// codexUUIDPattern matches the shape of real Codex rollout session ids
+// (e.g. 019eeb33-64dc-7302-b43c-7b4f10902b02): 8-4-4-4-12 lowercase hex
+// groups. Codex's rollout-directory scanner rejects filenames whose
+// trailing segment doesn't match this shape (see newCodexSessionID's doc
+// comment in handoff_codex.go for the live-tested bug this guards
+// against), so this is checked structurally rather than just "non-empty".
+var codexUUIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 func TestWriteCodexSession_WritesOneJSONLLinePerMessage(t *testing.T) {
 	home := t.TempDir()
@@ -63,6 +72,15 @@ func TestWriteCodexSession_WritesOneJSONLLinePerMessage(t *testing.T) {
 	}
 	if meta.Payload.ID == "" {
 		t.Errorf("expected session_meta.id to be set, got empty")
+	}
+	if !codexUUIDPattern.MatchString(meta.Payload.ID) {
+		t.Errorf("expected session_meta.id to look like a UUID (8-4-4-4-12 hex), got %q", meta.Payload.ID)
+	}
+	if len(meta.Payload.ID) != 36 {
+		t.Errorf("expected session_meta.id to be 36 characters, got %d (%q)", len(meta.Payload.ID), meta.Payload.ID)
+	}
+	if !strings.Contains(path, meta.Payload.ID) {
+		t.Errorf("expected filename %q to contain session_meta.id %q (must be the same shared value)", path, meta.Payload.ID)
 	}
 	if meta.Payload.Cwd != cwd {
 		t.Errorf("expected session_meta.cwd %q, got %q", cwd, meta.Payload.Cwd)
