@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 )
@@ -62,17 +63,55 @@ func runPush() error {
 		return err
 	}
 
-	conversation := buildConversation(messages)
-
-	fmt.Println("Pushing conversation…")
-	viewURL, err := pushToServer(apiKey, conversation)
+	fmt.Println("Found session. Where do you want to send it?")
+	fmt.Println("  [1] Web view link (sharetoai.app)")
+	fmt.Println("  [2] OpenCode")
+	fmt.Println("  [3] Codex")
+	fmt.Println("  [4] Antigravity")
+	fmt.Print("> ")
+	destination, err := parseDestinationChoice(bufio.NewReader(os.Stdin))
 	if err != nil {
 		return err
 	}
 
-	fmt.Println(viewURL)
-	if err := openBrowser(viewURL); err != nil {
-		fmt.Fprintf(os.Stderr, "(couldn't auto-open a browser: %v — open the link above manually)\n", err)
+	if destination == "web" {
+		conversation := buildConversation(messages)
+		fmt.Println("Pushing conversation…")
+		viewURL, err := pushToServer(apiKey, conversation)
+		if err != nil {
+			return err
+		}
+		fmt.Println(viewURL)
+		if err := openBrowser(viewURL); err != nil {
+			fmt.Fprintf(os.Stderr, "(couldn't auto-open a browser: %v — open the link above manually)\n", err)
+		}
+		return nil
+	}
+
+	if err := postLocalHandoffCredit(apiKey, destination); err != nil {
+		return err
+	}
+
+	switch destination {
+	case "opencode":
+		path, err := writeOpenCodeSession(messages, cwd)
+		if err != nil {
+			return err
+		}
+		runOrPrint("opencode", []string{"import", path}, fmt.Sprintf("Run this to finish importing:\n  opencode import %s", path))
+	case "codex":
+		path, err := writeCodexSession(messages, cwd)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Wrote %s\n", path)
+		runOrPrint("codex", []string{"resume", "--last"}, "Run this to resume:\n  codex resume --last")
+	case "antigravity":
+		path, err := writeAntigravityHandoff(messages)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Wrote your conversation to %s\n\nAntigravity has no public API for importing external conversations. Open Antigravity, start a new conversation, and paste this file's content as your first message.\n", path)
 	}
 	return nil
 }
@@ -198,4 +237,75 @@ func pushToServer(apiKey string, conversation outConversation) (string, error) {
 		return "", fmt.Errorf("unexpected response from server: %w", err)
 	}
 	return result.ViewURL, nil
+}
+
+// parseDestinationChoice reads one line and maps it to a destination key.
+func parseDestinationChoice(r *bufio.Reader) (string, error) {
+	line, _ := r.ReadString('\n')
+	choice := strings.TrimSpace(line)
+	switch choice {
+	case "1":
+		return "web", nil
+	case "2":
+		return "opencode", nil
+	case "3":
+		return "codex", nil
+	case "4":
+		return "antigravity", nil
+	default:
+		return "", fmt.Errorf("invalid choice %q", choice)
+	}
+}
+
+// postLocalHandoffCredit charges the same credit cost the web-link
+// destination pays, without sending any conversation content.
+func postLocalHandoffCredit(apiKey, tool string) error {
+	body, err := json.Marshal(map[string]string{"tool": tool})
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, apiBaseURL()+"/cli/local-handoff", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("could not reach %s: %w", apiBaseURL(), err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		return nil
+	}
+
+	respBody, _ := io.ReadAll(resp.Body)
+	var apiErr struct {
+		Detail string `json:"detail"`
+	}
+	if json.Unmarshal(respBody, &apiErr) == nil && apiErr.Detail != "" {
+		return fmt.Errorf("%s", apiErr.Detail)
+	}
+	return fmt.Errorf("server returned %s", resp.Status)
+}
+
+// runOrPrint auto-runs a target tool's command if it's on PATH; otherwise
+// it prints the command for the user to run themselves.
+func runOrPrint(bin string, args []string, hint string) {
+	if _, err := exec.LookPath(bin); err != nil {
+		fmt.Println(hint)
+		return
+	}
+	fmt.Printf("Running: %s %s\n", bin, strings.Join(args, " "))
+	cmd := exec.Command(bin, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "(couldn't auto-run %s: %v)\n%s\n", bin, err, hint)
+	}
 }
