@@ -139,7 +139,7 @@ func dispatchLocalDestination(destination string, messages []parsedMessage, cwd 
 		}
 		return path, "opencode", []string{"import", path}, fmt.Sprintf("Run this to finish importing:\n  opencode import %s", path), nil
 	case "codex":
-		path, err = writeCodexSession(messages)
+		path, err = writeCodexSession(messages, cwd)
 		if err != nil {
 			return "", "", nil, "", err
 		}
