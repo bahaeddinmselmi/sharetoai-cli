@@ -105,6 +105,129 @@ func TestPostLocalHandoffCredit_SendsToolAndKey(t *testing.T) {
 	}
 }
 
+// TestDispatchLocalDestination_OpenCode is a regression test for the actual
+// switch inside runPush() that maps a destination choice to the correct
+// writer: it asserts destination "opencode" writes a real, importable
+// OpenCode session file and reports the right auto-run command.
+func TestDispatchLocalDestination_OpenCode(t *testing.T) {
+	messages := []parsedMessage{
+		{Role: "user", Content: "how do I deploy this?", Timestamp: "2026-07-19T10:00:00Z"},
+	}
+	cwd := t.TempDir()
+
+	path, runBin, runArgs, hint, err := dispatchLocalDestination("opencode", messages, cwd)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer os.Remove(path)
+
+	if !strings.HasSuffix(path, ".json") {
+		t.Errorf("expected a .json file, got %q", path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading written file: %v", err)
+	}
+	var out openCodeSessionExport
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("written file isn't valid OpenCode export JSON: %v", err)
+	}
+	if len(out.Messages) != 1 || out.Messages[0].Parts[0].Text != "how do I deploy this?" {
+		t.Errorf("expected message content to round-trip into the OpenCode file, got %+v", out.Messages)
+	}
+
+	if runBin != "opencode" {
+		t.Errorf("expected runBin %q, got %q", "opencode", runBin)
+	}
+	if len(runArgs) != 2 || runArgs[0] != "import" || runArgs[1] != path {
+		t.Errorf("expected runArgs [import %s], got %v", path, runArgs)
+	}
+	if !strings.Contains(hint, path) {
+		t.Errorf("expected hint to mention the written path %q, got %q", path, hint)
+	}
+}
+
+// TestDispatchLocalDestination_Codex is the same regression test for
+// destination "codex": it must write a real rollout-*.jsonl file under
+// ~/.codex/sessions and report the "codex resume --last" auto-run command.
+func TestDispatchLocalDestination_Codex(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("USERPROFILE", home) // Windows: os.UserHomeDir() reads this
+	t.Setenv("HOME", home)        // macOS/Linux
+
+	messages := []parsedMessage{
+		{Role: "user", Content: "explain this function", Timestamp: "2026-07-19T10:00:00Z"},
+	}
+
+	path, runBin, runArgs, hint, err := dispatchLocalDestination("codex", messages, t.TempDir())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.HasPrefix(path, home) {
+		t.Errorf("expected path under home dir %q, got %q", home, path)
+	}
+	if !strings.HasSuffix(path, ".jsonl") {
+		t.Errorf("expected a .jsonl file, got %q", path)
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Errorf("expected the Codex rollout file to actually exist on disk: %v", statErr)
+	}
+
+	if runBin != "codex" {
+		t.Errorf("expected runBin %q, got %q", "codex", runBin)
+	}
+	if len(runArgs) != 2 || runArgs[0] != "resume" || runArgs[1] != "--last" {
+		t.Errorf("expected runArgs [resume --last], got %v", runArgs)
+	}
+	if !strings.Contains(hint, "codex resume --last") {
+		t.Errorf("expected hint to mention the resume command, got %q", hint)
+	}
+}
+
+// TestDispatchLocalDestination_Antigravity is the same regression test for
+// destination "antigravity": it must write a readable Markdown file and
+// report that there's nothing to auto-run (Antigravity has no import CLI).
+func TestDispatchLocalDestination_Antigravity(t *testing.T) {
+	messages := []parsedMessage{
+		{Role: "user", Content: "what does this error mean?", Timestamp: "2026-07-19T10:00:00Z"},
+	}
+
+	path, runBin, runArgs, hint, err := dispatchLocalDestination("antigravity", messages, t.TempDir())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer os.Remove(path)
+
+	if !strings.HasSuffix(path, ".md") {
+		t.Errorf("expected a .md file, got %q", path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading written file: %v", err)
+	}
+	if !strings.Contains(string(data), "what does this error mean?") {
+		t.Errorf("expected message content in written file, got: %s", data)
+	}
+
+	if runBin != "" {
+		t.Errorf("Antigravity has nothing to auto-run, expected empty runBin, got %q", runBin)
+	}
+	if runArgs != nil {
+		t.Errorf("expected nil runArgs for Antigravity, got %v", runArgs)
+	}
+	if hint == "" {
+		t.Error("expected a non-empty hint explaining the manual paste step")
+	}
+}
+
+func TestDispatchLocalDestination_UnknownDestinationErrors(t *testing.T) {
+	_, _, _, _, err := dispatchLocalDestination("carrier-pigeon", nil, t.TempDir())
+	if err == nil {
+		t.Fatal("expected an error for an unrecognized destination, got nil")
+	}
+}
+
 func TestPostLocalHandoffCredit_ReturnsErrorOn402(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusPaymentRequired)

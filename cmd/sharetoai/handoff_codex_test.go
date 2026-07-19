@@ -20,7 +20,7 @@ func TestWriteCodexSession_WritesOneJSONLLinePerMessage(t *testing.T) {
 		{Role: "assistant", Content: "this function does X", Timestamp: "2026-07-19T10:00:05Z"},
 	}
 
-	path, err := writeCodexSession(messages, `C:\Users\bahae\convobridge`)
+	path, err := writeCodexSession(messages)
 	if err != nil {
 		t.Fatalf("writeCodexSession returned error: %v", err)
 	}

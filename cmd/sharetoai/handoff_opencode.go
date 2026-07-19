@@ -195,7 +195,7 @@ func writeOpenCodeSession(messages []parsedMessage, cwd string) (string, error) 
 
 	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("encoding OpenCode handoff file: %w", err)
 	}
 
 	path := filepath.Join(os.TempDir(), "sharetoai-handoff-"+sessionID+".json")

@@ -35,10 +35,10 @@ type codexContentBlock struct {
 // rollout-*.jsonl file under ~/.codex/sessions/YYYY/MM/DD/, matching
 // where Codex CLI itself stores sessions (so `codex resume --last` will
 // find it as the most recent rollout).
-func writeCodexSession(messages []parsedMessage, cwd string) (string, error) {
+func writeCodexSession(messages []parsedMessage) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("locating home directory: %w", err)
 	}
 
 	now := time.Now()

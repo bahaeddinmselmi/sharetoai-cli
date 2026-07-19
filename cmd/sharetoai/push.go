@@ -96,32 +96,63 @@ func runPush() error {
 		return nil
 	}
 
-	if err := postLocalHandoffCredit(apiKey, destination); err != nil {
+	// Produce the deliverable BEFORE charging any credit: dispatch writes
+	// the local handoff file (or fails, e.g. a temp-file write error or a
+	// ~/.codex mkdir permission failure) with no charge having happened
+	// yet. Only once the file genuinely exists on disk do we bill the
+	// user for it — never the other way around, which would charge for a
+	// handoff the user never received.
+	path, runBin, runArgs, hint, err := dispatchLocalDestination(destination, messages, cwd)
+	if err != nil {
 		return err
 	}
 
-	switch destination {
-	case "opencode":
-		path, err := writeOpenCodeSession(messages, cwd)
-		if err != nil {
-			return err
-		}
-		runOrPrint("opencode", []string{"import", path}, fmt.Sprintf("Run this to finish importing:\n  opencode import %s", path))
-	case "codex":
-		path, err := writeCodexSession(messages, cwd)
-		if err != nil {
-			return err
-		}
-		fmt.Printf("Wrote %s\n", path)
-		runOrPrint("codex", []string{"resume", "--last"}, "Run this to resume:\n  codex resume --last")
-	case "antigravity":
-		path, err := writeAntigravityHandoff(messages)
-		if err != nil {
-			return err
-		}
-		fmt.Printf("Wrote your conversation to %s\n\nAntigravity has no public API for importing external conversations. Open Antigravity, start a new conversation, and paste this file's content as your first message.\n", path)
+	if err := postLocalHandoffCredit(apiKey, destination); err != nil {
+		// The file was written successfully but the credit call failed —
+		// the user keeps the file they already have and simply wasn't
+		// charged for it. That's the safe direction to fail in: no harm
+		// done, unlike charging before the file existed.
+		return err
+	}
+
+	fmt.Printf("Wrote %s\n", path)
+	if runBin != "" {
+		runOrPrint(runBin, runArgs, hint)
+	} else {
+		fmt.Println(hint)
 	}
 	return nil
+}
+
+// dispatchLocalDestination writes the handed-off conversation in the file
+// format the chosen destination expects and reports how to hand it off from
+// there. runBin/runArgs name a command runOrPrint can try to auto-run; an
+// empty runBin means there's nothing to auto-run (e.g. Antigravity has no
+// import command) and the caller should just print hint. hint is always the
+// human-readable fallback/explanation to show either way.
+func dispatchLocalDestination(destination string, messages []parsedMessage, cwd string) (path, runBin string, runArgs []string, hint string, err error) {
+	switch destination {
+	case "opencode":
+		path, err = writeOpenCodeSession(messages, cwd)
+		if err != nil {
+			return "", "", nil, "", err
+		}
+		return path, "opencode", []string{"import", path}, fmt.Sprintf("Run this to finish importing:\n  opencode import %s", path), nil
+	case "codex":
+		path, err = writeCodexSession(messages)
+		if err != nil {
+			return "", "", nil, "", err
+		}
+		return path, "codex", []string{"resume", "--last"}, "Run this to resume:\n  codex resume --last", nil
+	case "antigravity":
+		path, err = writeAntigravityHandoff(messages)
+		if err != nil {
+			return "", "", nil, "", err
+		}
+		return path, "", nil, "Antigravity has no public API for importing external conversations. Open Antigravity, start a new conversation, and paste this file's content as your first message.", nil
+	default:
+		return "", "", nil, "", fmt.Errorf("unknown local destination %q", destination)
+	}
 }
 
 // chooseSessionFile returns the single match outright, or prompts
