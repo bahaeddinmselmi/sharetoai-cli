@@ -48,6 +48,35 @@ func TestWriteOpenCodeSession_ProducesImportableShape(t *testing.T) {
 	if out.Messages[1].Info.Role != "assistant" || out.Messages[1].Parts[0].Text != "here's a step-by-step guide..." {
 		t.Errorf("second message not preserved correctly: %+v", out.Messages[1])
 	}
+	// Every message's info block must carry "agent" — real `opencode import`
+	// rejects files missing it on any message (not just the session-level
+	// info) with "Missing key at [\"agent\"]".
+	for i, m := range out.Messages {
+		if m.Info.Agent != "build" {
+			t.Errorf("message %d: expected Info.Agent %q, got %q", i, "build", m.Info.Agent)
+		}
+	}
+	// A real `opencode import` round-trip also rejects messages missing
+	// "model"/"modelID"+"providerID", "parentID", or "cost"/"tokens" — the
+	// user message needs the nested "model" object, the assistant message
+	// needs the flat modelID/providerID plus parentID/cost/tokens.
+	userInfo := out.Messages[0].Info
+	if userInfo.Model == nil || userInfo.Model.ProviderID == "" || userInfo.Model.ModelID == "" {
+		t.Errorf("user message missing required Info.Model: %+v", userInfo)
+	}
+	asstInfo := out.Messages[1].Info
+	if asstInfo.ModelID == "" || asstInfo.ProviderID == "" {
+		t.Errorf("assistant message missing required Info.ModelID/ProviderID: %+v", asstInfo)
+	}
+	if asstInfo.ParentID != userInfo.ID {
+		t.Errorf("assistant message ParentID = %q, want preceding message ID %q", asstInfo.ParentID, userInfo.ID)
+	}
+	if asstInfo.Cost == nil {
+		t.Errorf("assistant message missing required Info.Cost")
+	}
+	if asstInfo.Tokens == nil {
+		t.Errorf("assistant message missing required Info.Tokens")
+	}
 	// Every message/part ID must be unique — OpenCode keys on these.
 	seen := map[string]bool{}
 	for _, m := range out.Messages {
