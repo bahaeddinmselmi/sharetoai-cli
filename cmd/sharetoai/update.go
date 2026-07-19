@@ -109,11 +109,49 @@ func runUpdate() error {
 	}
 	tmpFile.Close()
 
-	if err := os.Rename(tmpPath, exePath); err != nil {
+	if err := replaceExecutable(tmpPath, exePath); err != nil {
 		os.Remove(tmpPath)
-		return fmt.Errorf("replacing current binary (you may need to run this from outside the binary's own directory, or manually move %s to %s): %w", tmpPath, exePath, err)
+		return err
 	}
 
 	fmt.Printf("Updated to %s — installed at %s\n", latest, filepath.Clean(exePath))
+	return nil
+}
+
+// replaceExecutable swaps the file at tmpPath into exePath, working around a
+// Windows-specific restriction: you cannot rename a file onto the path of a
+// currently-executing .exe (the OS keeps that path locked while the process
+// runs). What Windows does allow is renaming the running executable itself
+// away to a different name — the process's open handle stays valid — so this
+// follows the standard Windows self-update pattern (used by tools like
+// rclone and restic): first rename the current exePath out of the way to
+// exePath+".old" (best-effort — a missing exePath is fine, anything else
+// with a file actually present there is a real error), then rename tmpPath
+// into the now-vacated exePath. On macOS/Linux the backup rename is not
+// strictly required (an in-place rename over a running binary works there),
+// but doing it unconditionally keeps the logic — and its test coverage —
+// identical across platforms, and still gives us a recovery copy if the
+// second rename fails.
+func replaceExecutable(tmpPath, exePath string) error {
+	backupPath := exePath + ".old"
+	if err := os.Rename(exePath, backupPath); err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("backing up current binary before replacing it (manually move %s to %s): %w", tmpPath, exePath, err)
+		}
+		// Nothing exists at exePath yet — nothing to back up, continue.
+		backupPath = ""
+	}
+
+	if err := os.Rename(tmpPath, exePath); err != nil {
+		if backupPath != "" {
+			return fmt.Errorf("replacing current binary (the previous binary was preserved at %s — you can manually move it back to %s, or manually move the downloaded update at %s to %s): %w", backupPath, exePath, tmpPath, exePath, err)
+		}
+		return fmt.Errorf("replacing current binary (you may need to run this from outside the binary's own directory, or manually move %s to %s): %w", tmpPath, exePath, err)
+	}
+
+	if backupPath != "" {
+		os.Remove(backupPath)
+	}
+
 	return nil
 }
