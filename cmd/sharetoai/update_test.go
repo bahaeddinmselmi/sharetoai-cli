@@ -1,11 +1,15 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -41,6 +45,121 @@ func TestReleaseAssetName_MatchesInstallScriptConvention(t *testing.T) {
 		if got != c.want {
 			t.Errorf("releaseAssetName(%q, %q) = %q, want %q", c.goos, c.goarch, got, c.want)
 		}
+	}
+}
+
+// TestVerifyChecksum_MatchingSumSucceeds exercises verifyChecksum against a
+// fake httptest server serving a ".sha256" file in the exact format
+// release.yml's `shasum -a 256 "${out}" > "${out}.sha256"` produces
+// ("<hex-hash>  <filename>\n"), with a sum that genuinely matches.
+func TestVerifyChecksum_MatchingSumSucceeds(t *testing.T) {
+	sum := sha256.Sum256([]byte("pretend-this-is-a-real-executable"))
+	checksumLine := fmt.Sprintf("%s  sharetoai-linux-amd64\n", hex.EncodeToString(sum[:]))
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(checksumLine))
+	}))
+	defer server.Close()
+
+	if err := verifyChecksum(server.URL, "sharetoai-linux-amd64", sum[:]); err != nil {
+		t.Fatalf("expected checksum to verify, got error: %v", err)
+	}
+}
+
+// TestVerifyChecksum_MismatchedSumFails is the direct regression test for
+// the finding: a downloaded binary whose SHA256 doesn't match the published
+// .sha256 must be rejected with a clear error, not silently accepted.
+func TestVerifyChecksum_MismatchedSumFails(t *testing.T) {
+	wrongSum := sha256.Sum256([]byte("some-other-content"))
+	checksumLine := fmt.Sprintf("%s  sharetoai-linux-amd64\n", hex.EncodeToString(wrongSum[:]))
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(checksumLine))
+	}))
+	defer server.Close()
+
+	gotSum := sha256.Sum256([]byte("pretend-this-is-a-real-executable"))
+	err := verifyChecksum(server.URL, "sharetoai-linux-amd64", gotSum[:])
+	if err == nil {
+		t.Fatal("expected a checksum mismatch error, got nil")
+	}
+	if !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Errorf("expected a checksum mismatch error, got: %v", err)
+	}
+}
+
+func TestVerifyChecksum_MalformedChecksumFileFails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(""))
+	}))
+	defer server.Close()
+
+	sum := sha256.Sum256([]byte("x"))
+	if err := verifyChecksum(server.URL, "sharetoai-linux-amd64", sum[:]); err == nil {
+		t.Fatal("expected an error for an empty/malformed checksum file, got nil")
+	}
+}
+
+func TestVerifyChecksum_ServerErrorFails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	sum := sha256.Sum256([]byte("x"))
+	if err := verifyChecksum(server.URL, "sharetoai-linux-amd64", sum[:]); err == nil {
+		t.Fatal("expected an error when the checksum file 404s, got nil")
+	}
+}
+
+// TestChecksumVerification_EndToEndAgainstFakeServer is a real (no mocking
+// of hashing/HTTP) live test of the whole pipeline runUpdate now runs: fetch
+// a binary asset over HTTP while hashing it — exactly like io.Copy(io.
+// MultiWriter(tmpFile, hasher), resp.Body) does in runUpdate — then fetch
+// its published .sha256 over HTTP and verify. It proves a genuine download
+// verifies successfully, and that corrupting the downloaded bytes (without
+// touching the published checksum) is caught.
+func TestChecksumVerification_EndToEndAgainstFakeServer(t *testing.T) {
+	binary := []byte("pretend-this-is-a-real-sharetoai-executable-payload")
+	sum := sha256.Sum256(binary)
+	checksumLine := fmt.Sprintf("%s  sharetoai-linux-amd64\n", hex.EncodeToString(sum[:]))
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/sharetoai-linux-amd64", func(w http.ResponseWriter, r *http.Request) {
+		w.Write(binary)
+	})
+	mux.HandleFunc("/sharetoai-linux-amd64.sha256", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(checksumLine))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	// Download + hash in one pass, the same way runUpdate does.
+	resp, err := http.Get(server.URL + "/sharetoai-linux-amd64")
+	if err != nil {
+		t.Fatalf("download: %v", err)
+	}
+	defer resp.Body.Close()
+
+	hasher := sha256.New()
+	got, err := io.ReadAll(io.TeeReader(resp.Body, hasher))
+	if err != nil {
+		t.Fatalf("reading body: %v", err)
+	}
+	if string(got) != string(binary) {
+		t.Fatalf("downloaded content mismatch: got %q, want %q", got, binary)
+	}
+
+	if err := verifyChecksum(server.URL+"/sharetoai-linux-amd64.sha256", "sharetoai-linux-amd64", hasher.Sum(nil)); err != nil {
+		t.Fatalf("expected a genuine download to verify, got error: %v", err)
+	}
+
+	// A corrupted download (bit flip, truncation, tampering in transit) must
+	// be caught even though the published checksum itself is untouched.
+	corruptedHasher := sha256.New()
+	corruptedHasher.Write([]byte("this is NOT what the server actually sent"))
+	if err := verifyChecksum(server.URL+"/sharetoai-linux-amd64.sha256", "sharetoai-linux-amd64", corruptedHasher.Sum(nil)); err == nil {
+		t.Fatal("expected checksum verification to fail for corrupted download bytes, got nil")
 	}
 }
 

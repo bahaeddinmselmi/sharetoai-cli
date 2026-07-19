@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 )
 
@@ -102,12 +105,25 @@ func runUpdate() error {
 	if err != nil {
 		return fmt.Errorf("creating temp file: %w", err)
 	}
-	if _, err := io.Copy(tmpFile, resp.Body); err != nil {
+	hasher := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(tmpFile, hasher), resp.Body); err != nil {
 		tmpFile.Close()
 		os.Remove(tmpPath)
 		return fmt.Errorf("writing downloaded binary: %w", err)
 	}
 	tmpFile.Close()
+
+	// Verify integrity before ever handing tmpPath to replaceExecutable: the
+	// release workflow (.github/workflows/release.yml) publishes a
+	// "<asset>.sha256" file alongside every binary asset. This is a fresh
+	// download that hasn't touched replaceExecutable yet, so on mismatch
+	// it's safe (and correct) to just delete tmpPath ourselves — unlike
+	// replaceExecutable's own failure paths, no error message here points
+	// the user at tmpPath for manual recovery.
+	if err := verifyChecksum(url+".sha256", asset, hasher.Sum(nil)); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
 
 	// Note: replaceExecutable owns cleanup of tmpPath itself — it only
 	// removes tmpPath when it's genuinely safe to discard (the backup
@@ -121,6 +137,42 @@ func runUpdate() error {
 	}
 
 	fmt.Printf("Updated to %s — installed at %s\n", latest, filepath.Clean(exePath))
+	return nil
+}
+
+// verifyChecksum downloads checksumURL — the release's "<asset>.sha256" file,
+// published by .github/workflows/release.yml via
+// `shasum -a 256 "${out}" > "${out}.sha256"`, i.e. one line formatted as
+// "<hex-hash>  <filename>\n" — and compares its hash against gotSum (the
+// SHA256 actually computed over the bytes that were downloaded). Returns a
+// descriptive error on any mismatch, network failure, or malformed checksum
+// file, so a corrupted or tampered download is caught before it's ever
+// swapped into place as the running binary.
+func verifyChecksum(checksumURL, assetName string, gotSum []byte) error {
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(checksumURL)
+	if err != nil {
+		return fmt.Errorf("downloading checksum for %s: %w", assetName, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("downloading checksum for %s: server returned %s", assetName, resp.Status)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("reading checksum for %s: %w", assetName, err)
+	}
+
+	fields := strings.Fields(string(body))
+	if len(fields) == 0 {
+		return fmt.Errorf("checksum file for %s is empty or malformed", assetName)
+	}
+	want := strings.ToLower(fields[0])
+	got := hex.EncodeToString(gotSum)
+	if want != got {
+		return fmt.Errorf("checksum mismatch for %s: expected %s, got %s — download may be corrupted or tampered with", assetName, want, got)
+	}
 	return nil
 }
 
