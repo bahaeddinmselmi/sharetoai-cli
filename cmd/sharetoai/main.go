@@ -26,6 +26,8 @@ func main() {
 		err = runLogin()
 	case "push":
 		err = runPush()
+	case "update":
+		err = runUpdate()
 	case "-v", "--version", "version":
 		fmt.Println("sharetoai " + version)
 		return
@@ -47,5 +49,6 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, `Usage:
   sharetoai login    Store your CLI API key (generate one at sharetoai.app/account)
-  sharetoai push     Push the most recent Claude Code session in this directory`)
+  sharetoai push     Push the most recent Claude Code session in this directory
+  sharetoai update   Update sharetoai to the latest release`)
 }
