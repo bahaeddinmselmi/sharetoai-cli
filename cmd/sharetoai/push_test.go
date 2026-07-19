@@ -5,9 +5,55 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// TestChooseSessionFileThenDestination_ShareOneReader is a regression test
+// for a live bug: chooseSessionFile and parseDestinationChoice each used to
+// construct their own bufio.NewReader(os.Stdin). bufio.Reader reads ahead
+// into its own internal buffer, so when chooseSessionFile's reader pulled
+// both queued answers ("1\n" and "2\n") from stdin in one underlying read,
+// only "1\n" was returned to the caller — "2\n" stayed trapped in that
+// first reader's buffer. A second, independent reader constructed later by
+// parseDestinationChoice then saw stdin as already drained and failed with
+// "invalid choice \"\"" instead of reading "2". The fix is to construct
+// exactly one *bufio.Reader per run and pass it to both call sites; this
+// test proves sequential reads off a single shared reader work correctly.
+func TestChooseSessionFileThenDestination_ShareOneReader(t *testing.T) {
+	dir := t.TempDir()
+	files := make([]sessionFile, 2)
+	for i := range files {
+		path := filepath.Join(dir, "session"+string(rune('A'+i))+".jsonl")
+		line := `{"type":"user","isSidechain":false,"isMeta":false,"timestamp":"2026-07-19T10:00:00Z","message":{"role":"user","content":"hello from session"}}` + "\n"
+		if err := os.WriteFile(path, []byte(line), 0o644); err != nil {
+			t.Fatalf("could not write fixture session file: %v", err)
+		}
+		files[i] = sessionFile{Path: path, ModTime: int64(i)}
+	}
+
+	// One shared reader, fed both answers up front — exactly as os.Stdin
+	// would be when the user pipes "1\n2\n" into the process.
+	reader := bufio.NewReader(strings.NewReader("1\n2\n"))
+
+	chosen, err := chooseSessionFile(files, reader)
+	if err != nil {
+		t.Fatalf("chooseSessionFile returned error: %v", err)
+	}
+	if chosen.Path != files[0].Path {
+		t.Fatalf("expected first session choice %q, got %q", files[0].Path, chosen.Path)
+	}
+
+	destination, err := parseDestinationChoice(reader)
+	if err != nil {
+		t.Fatalf("parseDestinationChoice returned error: %v", err)
+	}
+	if destination != "opencode" {
+		t.Fatalf("expected second read off the shared reader to yield %q, got %q", "opencode", destination)
+	}
+}
 
 func TestChooseDestination_ParsesEachValidChoice(t *testing.T) {
 	cases := map[string]string{

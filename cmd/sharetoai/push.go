@@ -53,7 +53,15 @@ func runPush() error {
 		return fmt.Errorf("no Claude Code session found for %s", cwd)
 	}
 
-	chosen, err := chooseSessionFile(files)
+	// A single reader wrapping stdin, shared across every interactive prompt
+	// in this run. bufio.Reader reads ahead into its own internal buffer, so
+	// two independent readers over the same os.Stdin can race: the first
+	// reader's underlying read syscall may pull bytes meant for a later
+	// prompt into its own buffer, leaving a second, freshly-constructed
+	// reader looking at an already-drained stdin.
+	stdin := bufio.NewReader(os.Stdin)
+
+	chosen, err := chooseSessionFile(files, stdin)
 	if err != nil {
 		return err
 	}
@@ -69,7 +77,7 @@ func runPush() error {
 	fmt.Println("  [3] Codex")
 	fmt.Println("  [4] Antigravity")
 	fmt.Print("> ")
-	destination, err := parseDestinationChoice(bufio.NewReader(os.Stdin))
+	destination, err := parseDestinationChoice(stdin)
 	if err != nil {
 		return err
 	}
@@ -118,8 +126,12 @@ func runPush() error {
 
 // chooseSessionFile returns the single match outright, or prompts
 // interactively when more than one session file was found for this
-// project — never guesses on the user's behalf.
-func chooseSessionFile(files []sessionFile) (sessionFile, error) {
+// project — never guesses on the user's behalf. The caller supplies the
+// *bufio.Reader wrapping stdin so that it can be reused for any later
+// prompts in the same run; bufio.Reader reads ahead into its own internal
+// buffer, so creating a second, independent reader over os.Stdin later in
+// the same process would silently drop any input it already buffered.
+func chooseSessionFile(files []sessionFile, reader *bufio.Reader) (sessionFile, error) {
 	if len(files) == 1 {
 		return files[0], nil
 	}
@@ -135,7 +147,6 @@ func chooseSessionFile(files []sessionFile) (sessionFile, error) {
 	}
 	fmt.Print("> ")
 
-	reader := bufio.NewReader(os.Stdin)
 	line, _ := reader.ReadString('\n')
 	var choice int
 	if _, err := fmt.Sscanf(strings.TrimSpace(line), "%d", &choice); err != nil || choice < 1 || choice > len(files) {
