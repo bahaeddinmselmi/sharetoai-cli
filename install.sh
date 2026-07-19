@@ -36,4 +36,19 @@ case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
   *) echo "Add it to your PATH: export PATH=\"$BIN_DIR:\$PATH\"" ;;
 esac
+
+# Another sharetoai binary earlier on PATH (e.g. a leftover `go install`
+# build) would silently shadow the one just installed -- every future
+# `sharetoai` command would keep running the old one with no indication
+# anything is wrong. Catch that now, while the fix is obvious, instead of
+# leaving the user to debug a missing command later.
+resolved=$(command -v sharetoai 2>/dev/null || true)
+if [ -n "$resolved" ] && [ "$resolved" != "$BIN_DIR/sharetoai" ]; then
+  echo ""
+  echo "Warning: another 'sharetoai' was found earlier on your PATH:"
+  echo "  $resolved"
+  echo "The version you just installed at $BIN_DIR/sharetoai will not run until you"
+  echo "remove the other one or move $BIN_DIR earlier in your PATH."
+fi
+
 echo "Next: sharetoai login"
