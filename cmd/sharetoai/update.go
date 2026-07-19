@@ -109,14 +109,28 @@ func runUpdate() error {
 	}
 	tmpFile.Close()
 
+	// Note: replaceExecutable owns cleanup of tmpPath itself — it only
+	// removes tmpPath when it's genuinely safe to discard (the backup
+	// step failed and exePath was never touched). On any other failure,
+	// tmpPath is the last copy of the downloaded update and/or the file
+	// the error message tells the user to manually move into place, so
+	// it must be left on disk. Do not unconditionally os.Remove(tmpPath)
+	// here.
 	if err := replaceExecutable(tmpPath, exePath); err != nil {
-		os.Remove(tmpPath)
 		return err
 	}
 
 	fmt.Printf("Updated to %s — installed at %s\n", latest, filepath.Clean(exePath))
 	return nil
 }
+
+// renameFile is os.Rename, kept as a package-level var so tests can
+// substitute a stub that fails on demand — some of the failure modes
+// replaceExecutable needs to handle (e.g. the destination rename succeeding
+// for the backup but failing for the final swap, due to a transient lock
+// from antivirus/indexing) are impractical to trigger portably through the
+// real filesystem across platforms.
+var renameFile = os.Rename
 
 // replaceExecutable swaps the file at tmpPath into exePath, working around a
 // Windows-specific restriction: you cannot rename a file onto the path of a
@@ -132,21 +146,35 @@ func runUpdate() error {
 // but doing it unconditionally keeps the logic — and its test coverage —
 // identical across platforms, and still gives us a recovery copy if the
 // second rename fails.
+//
+// replaceExecutable owns all cleanup of tmpPath, because only it knows which
+// of the two renames failed:
+//   - If the backup rename fails for a real reason (not just "exePath
+//     doesn't exist yet"), exePath is untouched — nothing was lost, so
+//     tmpPath is no longer needed and replaceExecutable removes it here.
+//   - If the backup rename succeeds (or was skipped because exePath never
+//     existed) but the second rename fails, exePath is now missing (or was
+//     never created), and tmpPath is the only thing standing between the
+//     user and a missing sharetoai binary — this function's own error
+//     message tells the user to manually move tmpPath into place, so it
+//     must NOT be deleted, by this function or by its caller.
 func replaceExecutable(tmpPath, exePath string) error {
 	backupPath := exePath + ".old"
-	if err := os.Rename(exePath, backupPath); err != nil {
+	if err := renameFile(exePath, backupPath); err != nil {
 		if !os.IsNotExist(err) {
-			return fmt.Errorf("backing up current binary before replacing it (manually move %s to %s): %w", tmpPath, exePath, err)
+			// exePath is untouched; tmpPath isn't needed for recovery.
+			os.Remove(tmpPath)
+			return fmt.Errorf("backing up current binary before replacing it: %w", err)
 		}
 		// Nothing exists at exePath yet — nothing to back up, continue.
 		backupPath = ""
 	}
 
-	if err := os.Rename(tmpPath, exePath); err != nil {
+	if err := renameFile(tmpPath, exePath); err != nil {
 		if backupPath != "" {
-			return fmt.Errorf("replacing current binary (the previous binary was preserved at %s — you can manually move it back to %s, or manually move the downloaded update at %s to %s): %w", backupPath, exePath, tmpPath, exePath, err)
+			return fmt.Errorf("replacing current binary (the previous binary was preserved at %s — you can manually move it back to %s; alternatively, the downloaded update is still at %s and can be manually moved to %s): %w", backupPath, exePath, tmpPath, exePath, err)
 		}
-		return fmt.Errorf("replacing current binary (you may need to run this from outside the binary's own directory, or manually move %s to %s): %w", tmpPath, exePath, err)
+		return fmt.Errorf("replacing current binary (you may need to run this from outside the binary's own directory; the downloaded update is still at %s and can be manually moved to %s): %w", tmpPath, exePath, err)
 	}
 
 	if backupPath != "" {
