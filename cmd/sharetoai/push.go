@@ -194,13 +194,37 @@ func chooseSessionFile(files []sessionFile, reader *bufio.Reader) (sessionFile, 
 	return files[choice-1], nil
 }
 
+// syntheticUserMessagePrefixes are the opening tags Claude Code uses for
+// user-role transcript entries that are not something a human actually
+// typed — slash-command invocations and their output, plus background
+// task notifications. Verified against real session files on this
+// machine: a session opening with a slash command (e.g. `/login`) stores
+// it as a literal role="user" message whose content starts with one of
+// these, and firstUserMessageSnippet must not surface that as the picker
+// label.
+var syntheticUserMessagePrefixes = []string{
+	"<command-name>",
+	"<command-message>",
+	"<local-command-stdout>",
+	"<task-notification>",
+}
+
+func isSyntheticUserMessage(content string) bool {
+	for _, prefix := range syntheticUserMessagePrefixes {
+		if strings.HasPrefix(content, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func firstUserMessageSnippet(path string) (string, error) {
 	messages, err := parseSessionFile(path)
 	if err != nil {
 		return "", err
 	}
 	for _, m := range messages {
-		if m.Role == "user" {
+		if m.Role == "user" && !isSyntheticUserMessage(m.Content) {
 			return truncate(strings.ReplaceAll(m.Content, "\n", " "), 60), nil
 		}
 	}

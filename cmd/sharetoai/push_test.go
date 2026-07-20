@@ -275,6 +275,62 @@ func TestDispatchLocalDestination_UnknownDestinationErrors(t *testing.T) {
 	}
 }
 
+// TestFirstUserMessageSnippet_SkipsSlashCommandEnvelopes is a regression
+// test for a real bug: sessions whose first turn is a slash command (e.g.
+// the user ran `/login` before typing anything else) showed the raw
+// "<command-name>/login</command-name> ..." XML-ish envelope as the
+// picker's label instead of a readable snippet. Claude Code stores slash-
+// command invocations as literal role="user" messages with this envelope
+// as their content — verified against real session files on this machine,
+// which also showed the same pattern for "<command-message>",
+// "<local-command-stdout>", and "<task-notification>" wrapped content.
+// firstUserMessageSnippet must skip these and use the first genuine
+// free-text user turn instead.
+func TestFirstUserMessageSnippet_SkipsSlashCommandEnvelopes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	lines := []string{
+		`{"type":"user","isSidechain":false,"isMeta":false,"timestamp":"2026-07-20T10:00:00Z","message":{"role":"user","content":"<command-name>/login</command-name>\n            <command-message>login</command-message>\n            <command-args></command-args>"}}`,
+		`{"type":"user","isSidechain":false,"isMeta":false,"timestamp":"2026-07-20T10:00:01Z","message":{"role":"user","content":"<local-command-stdout>Login successful</local-command-stdout>"}}`,
+		`{"type":"user","isSidechain":false,"isMeta":false,"timestamp":"2026-07-20T10:00:02Z","message":{"role":"user","content":"how do I fix this deploy error?"}}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatalf("could not write fixture session file: %v", err)
+	}
+
+	got, err := firstUserMessageSnippet(path)
+	if err != nil {
+		t.Fatalf("firstUserMessageSnippet returned error: %v", err)
+	}
+	if got != "how do I fix this deploy error?" {
+		t.Errorf("expected the first genuine user message as the snippet, got %q", got)
+	}
+}
+
+// TestFirstUserMessageSnippet_FallsBackWhenOnlySyntheticMessagesExist
+// confirms a session made up entirely of slash-command noise (no real
+// free-text user turn at all) still returns the existing "(no user
+// message)" fallback rather than a raw command envelope.
+func TestFirstUserMessageSnippet_FallsBackWhenOnlySyntheticMessagesExist(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	lines := []string{
+		`{"type":"user","isSidechain":false,"isMeta":false,"timestamp":"2026-07-20T10:00:00Z","message":{"role":"user","content":"<command-name>/model</command-name>\n            <command-message>model</command-message>\n            <command-args></command-args>"}}`,
+		`{"type":"assistant","isSidechain":false,"isMeta":false,"timestamp":"2026-07-20T10:00:01Z","message":{"role":"assistant","content":"Model updated."}}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatalf("could not write fixture session file: %v", err)
+	}
+
+	got, err := firstUserMessageSnippet(path)
+	if err != nil {
+		t.Fatalf("firstUserMessageSnippet returned error: %v", err)
+	}
+	if got != "(no user message)" {
+		t.Errorf("expected the no-user-message fallback, got %q", got)
+	}
+}
+
 func TestPostLocalHandoffCredit_ReturnsErrorOn402(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusPaymentRequired)
