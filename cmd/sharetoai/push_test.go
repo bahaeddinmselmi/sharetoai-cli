@@ -284,9 +284,10 @@ func TestDispatchLocalDestination_UnknownDestinationErrors(t *testing.T) {
 // as their content — verified against real session files on this machine,
 // which also showed the same pattern for "<command-message>",
 // "<local-command-stdout>", and "<task-notification>" wrapped content.
-// firstUserMessageSnippet must skip these and use the first genuine
-// free-text user turn instead.
-func TestFirstUserMessageSnippet_SkipsSlashCommandEnvelopes(t *testing.T) {
+// sessionLabel must skip these and use the first genuine free-text user
+// turn instead, when there's no ai-title line to prefer (see
+// TestSessionLabel_PrefersClaudeCodesOwnAITitle below).
+func TestSessionLabel_SkipsSlashCommandEnvelopes(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")
 	lines := []string{
@@ -298,20 +299,20 @@ func TestFirstUserMessageSnippet_SkipsSlashCommandEnvelopes(t *testing.T) {
 		t.Fatalf("could not write fixture session file: %v", err)
 	}
 
-	got, err := firstUserMessageSnippet(path)
+	got, err := sessionLabel(path)
 	if err != nil {
-		t.Fatalf("firstUserMessageSnippet returned error: %v", err)
+		t.Fatalf("sessionLabel returned error: %v", err)
 	}
 	if got != "how do I fix this deploy error?" {
 		t.Errorf("expected the first genuine user message as the snippet, got %q", got)
 	}
 }
 
-// TestFirstUserMessageSnippet_FallsBackWhenOnlySyntheticMessagesExist
-// confirms a session made up entirely of slash-command noise (no real
-// free-text user turn at all) still returns the existing "(no user
+// TestSessionLabel_FallsBackWhenOnlySyntheticMessagesExist confirms a
+// session made up entirely of slash-command noise (no real free-text user
+// turn, and no ai-title line) still returns the existing "(no user
 // message)" fallback rather than a raw command envelope.
-func TestFirstUserMessageSnippet_FallsBackWhenOnlySyntheticMessagesExist(t *testing.T) {
+func TestSessionLabel_FallsBackWhenOnlySyntheticMessagesExist(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")
 	lines := []string{
@@ -322,12 +323,67 @@ func TestFirstUserMessageSnippet_FallsBackWhenOnlySyntheticMessagesExist(t *test
 		t.Fatalf("could not write fixture session file: %v", err)
 	}
 
-	got, err := firstUserMessageSnippet(path)
+	got, err := sessionLabel(path)
 	if err != nil {
-		t.Fatalf("firstUserMessageSnippet returned error: %v", err)
+		t.Fatalf("sessionLabel returned error: %v", err)
 	}
 	if got != "(no user message)" {
 		t.Errorf("expected the no-user-message fallback, got %q", got)
+	}
+}
+
+// TestSessionLabel_PrefersClaudeCodesOwnAITitle is a regression test for
+// the actual reported bug: sharetoai push's picker showed the session's
+// first message instead of the title Claude Code's own UI displays for
+// that session. Claude Code writes a dedicated "ai-title" line (verified
+// against real session files on this machine, e.g.
+// {"type":"ai-title","aiTitle":"Build ConvoBridge conversation extraction
+// tool","sessionId":"..."}) once it has generated a summary — when
+// present, sessionLabel must use that exact text rather than any message
+// content, even though a perfectly good real user message exists earlier
+// in the same file.
+func TestSessionLabel_PrefersClaudeCodesOwnAITitle(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	lines := []string{
+		`{"type":"user","isSidechain":false,"isMeta":false,"timestamp":"2026-07-20T10:00:00Z","message":{"role":"user","content":"I want to build a high-performance web-based tool called Convobridge."}}`,
+		`{"type":"ai-title","aiTitle":"Build ConvoBridge conversation extraction tool","sessionId":"abc-123"}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatalf("could not write fixture session file: %v", err)
+	}
+
+	got, err := sessionLabel(path)
+	if err != nil {
+		t.Fatalf("sessionLabel returned error: %v", err)
+	}
+	if got != "Build ConvoBridge conversation extraction tool" {
+		t.Errorf("expected Claude Code's own ai-title, got %q", got)
+	}
+}
+
+// TestSessionLabel_UsesLatestAITitleWhenRepeated confirms that when
+// multiple ai-title lines exist (observed in real session files -- Claude
+// Code appears to (re)write the same or an updated title as a session
+// progresses), the LAST one wins, not the first.
+func TestSessionLabel_UsesLatestAITitleWhenRepeated(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	lines := []string{
+		`{"type":"ai-title","aiTitle":"Early draft title","sessionId":"abc-123"}`,
+		`{"type":"user","isSidechain":false,"isMeta":false,"timestamp":"2026-07-20T10:00:00Z","message":{"role":"user","content":"more context"}}`,
+		`{"type":"ai-title","aiTitle":"Refined final title","sessionId":"abc-123"}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatalf("could not write fixture session file: %v", err)
+	}
+
+	got, err := sessionLabel(path)
+	if err != nil {
+		t.Fatalf("sessionLabel returned error: %v", err)
+	}
+	if got != "Refined final title" {
+		t.Errorf("expected the latest ai-title to win, got %q", got)
 	}
 }
 

@@ -177,7 +177,7 @@ func chooseSessionFile(files []sessionFile, reader *bufio.Reader) (sessionFile, 
 
 	fmt.Printf("Found %d recent sessions. Which one to push?\n", len(files))
 	for i, f := range files {
-		label, err := firstUserMessageSnippet(f.Path)
+		label, err := sessionLabel(f.Path)
 		if err != nil {
 			label = "(unreadable)"
 		}
@@ -200,8 +200,7 @@ func chooseSessionFile(files []sessionFile, reader *bufio.Reader) (sessionFile, 
 // task notifications. Verified against real session files on this
 // machine: a session opening with a slash command (e.g. `/login`) stores
 // it as a literal role="user" message whose content starts with one of
-// these, and firstUserMessageSnippet must not surface that as the picker
-// label.
+// these, and sessionLabel must not surface that as the picker label.
 var syntheticUserMessagePrefixes = []string{
 	"<command-name>",
 	"<command-message>",
@@ -218,7 +217,59 @@ func isSyntheticUserMessage(content string) bool {
 	return false
 }
 
-func firstUserMessageSnippet(path string) (string, error) {
+// aiTitleLine is the raw shape of an "ai-title" transcript line — Claude
+// Code's own generated summary for a session, the same text its own UI
+// (e.g. the /resume picker) displays. Verified against real session files
+// on this machine.
+type aiTitleLine struct {
+	Type    string `json:"type"`
+	AiTitle string `json:"aiTitle"`
+}
+
+// latestAITitle scans a transcript for the most recent "ai-title" line and
+// returns its text. Claude Code appears to (re)write this line as a
+// session progresses — the same title was observed repeated verbatim
+// across multiple lines in one real session file, and a later, refined
+// title over an earlier draft in another — so the LAST one found wins.
+// ok is false if the transcript has no ai-title line at all (observed on a
+// real, very short session), in which case the caller should fall back to
+// a message-based label.
+func latestAITitle(path string) (title string, ok bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", false
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var entry aiTitleLine
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		if entry.Type == "ai-title" && strings.TrimSpace(entry.AiTitle) != "" {
+			title = entry.AiTitle
+			ok = true
+		}
+	}
+	return title, ok
+}
+
+// sessionLabel returns the display label for a session in the destination
+// picker: Claude Code's own generated title when the transcript has one —
+// the same text Claude Code's own UI shows for this session — falling back
+// to the first genuine free-text user message when no title has been
+// generated yet (e.g. a very short or freshly-started session).
+func sessionLabel(path string) (string, error) {
+	if title, ok := latestAITitle(path); ok {
+		return truncate(title, 60), nil
+	}
+
 	messages, err := parseSessionFile(path)
 	if err != nil {
 		return "", err
