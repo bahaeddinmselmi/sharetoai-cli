@@ -145,6 +145,14 @@ func dispatchLocalDestination(destination string, messages []parsedMessage, cwd 
 		}
 		return path, "codex", []string{"resume", "--last"}, "Run this to resume:\n  codex resume --last", nil
 	case "antigravity":
+		convID, injectErr := writeAntigravityConversation(messages, cwd)
+		if injectErr == nil {
+			return convID, "agy", []string{"--conversation", convID}, fmt.Sprintf("Run this to resume:\n  agy --conversation %s", convID), nil
+		}
+		// Real injection needs a real Antigravity CLI install with the
+		// exact on-disk schema this was reverse-engineered against — any
+		// mismatch (not installed, schema changed) falls back to the
+		// original plain-Markdown handoff rather than failing outright.
 		path, err = writeAntigravityHandoff(messages)
 		if err != nil {
 			return "", "", nil, "", err

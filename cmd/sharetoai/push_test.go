@@ -185,10 +185,17 @@ func TestDispatchLocalDestination_Codex(t *testing.T) {
 	}
 }
 
-// TestDispatchLocalDestination_Antigravity is the same regression test for
-// destination "antigravity": it must write a readable Markdown file and
-// report that there's nothing to auto-run (Antigravity has no import CLI).
-func TestDispatchLocalDestination_Antigravity(t *testing.T) {
+// TestDispatchLocalDestination_Antigravity_FallsBackWithoutRealInstall
+// replaces the old TestDispatchLocalDestination_Antigravity: on a machine
+// with no ~/.gemini/antigravity-cli/ (isolated here via a fresh temp HOME),
+// writeAntigravityConversation must fail and dispatchLocalDestination must
+// fall back to the plain-Markdown writer, exactly like before real
+// injection existed.
+func TestDispatchLocalDestination_Antigravity_FallsBackWithoutRealInstall(t *testing.T) {
+	home := t.TempDir() // deliberately has no .gemini/antigravity-cli inside it
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HOME", home)
+
 	messages := []parsedMessage{
 		{Role: "user", Content: "what does this error mean?", Timestamp: "2026-07-19T10:00:00Z"},
 	}
@@ -200,7 +207,7 @@ func TestDispatchLocalDestination_Antigravity(t *testing.T) {
 	defer os.Remove(path)
 
 	if !strings.HasSuffix(path, ".md") {
-		t.Errorf("expected a .md file, got %q", path)
+		t.Errorf("expected a .md file (fallback path), got %q", path)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -211,13 +218,53 @@ func TestDispatchLocalDestination_Antigravity(t *testing.T) {
 	}
 
 	if runBin != "" {
-		t.Errorf("Antigravity has nothing to auto-run, expected empty runBin, got %q", runBin)
+		t.Errorf("fallback path has nothing to auto-run, expected empty runBin, got %q", runBin)
 	}
 	if runArgs != nil {
-		t.Errorf("expected nil runArgs for Antigravity, got %v", runArgs)
+		t.Errorf("expected nil runArgs for the fallback path, got %v", runArgs)
 	}
 	if hint == "" {
 		t.Error("expected a non-empty hint explaining the manual paste step")
+	}
+}
+
+// TestDispatchLocalDestination_Antigravity_InjectsWhenInstalled proves the
+// real-injection path is what runs when a valid Antigravity CLI install is
+// present: it must return a bare conversation ID as the "path" (no file
+// extension — nothing analogous to the Markdown fallback's .md file, since
+// the deliverable is a database row, not a standalone file) and the
+// "agy --conversation <id>" auto-run command.
+func TestDispatchLocalDestination_Antigravity_InjectsWhenInstalled(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HOME", home)
+	setupFakeAntigravityCLI(t, home)
+
+	messages := []parsedMessage{
+		{Role: "user", Content: "what does this error mean?", Timestamp: "2026-07-19T10:00:00Z"},
+	}
+
+	convID, runBin, runArgs, hint, err := dispatchLocalDestination("antigravity", messages, t.TempDir())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if convID == "" {
+		t.Fatalf("expected a non-empty conversation ID")
+	}
+	convPath := filepath.Join(home, ".gemini", "antigravity-cli", "conversations", convID+".db")
+	if _, statErr := os.Stat(convPath); statErr != nil {
+		t.Errorf("expected the conversation database to actually exist: %v", statErr)
+	}
+
+	if runBin != "agy" {
+		t.Errorf("expected runBin %q, got %q", "agy", runBin)
+	}
+	if len(runArgs) != 2 || runArgs[0] != "--conversation" || runArgs[1] != convID {
+		t.Errorf("expected runArgs [--conversation %s], got %v", convID, runArgs)
+	}
+	if !strings.Contains(hint, convID) {
+		t.Errorf("expected hint to mention the conversation ID %q, got %q", convID, hint)
 	}
 }
 
