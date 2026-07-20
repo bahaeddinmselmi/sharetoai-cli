@@ -124,7 +124,7 @@ func writeAntigravityConversation(messages []parsedMessage, cwd string) (string,
 	convID := newAntigravityUUID()
 	trajID := newAntigravityUUID()
 
-	tmp, err := os.CreateTemp("", "sharetoai-antigravity-conv-*.db")
+	tmp, err := os.CreateTemp(convDir, ".sharetoai-antigravity-conv-*.db")
 	if err != nil {
 		return "", fmt.Errorf("creating temp conversation database: %w", err)
 	}
