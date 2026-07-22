@@ -145,14 +145,18 @@ func dispatchLocalDestination(destination string, messages []parsedMessage, cwd 
 		}
 		return path, "codex", []string{"resume", "--last"}, "Run this to resume:\n  codex resume --last", nil
 	case "antigravity":
-		convID, injectErr := writeAntigravityConversation(messages, cwd)
-		if injectErr == nil {
-			return convID, "agy", []string{"--conversation", convID}, fmt.Sprintf("Run this to resume:\n  agy --conversation %s", convID), nil
-		}
-		// Real injection needs a real Antigravity CLI install with the
-		// exact on-disk schema this was reverse-engineered against — any
-		// mismatch (not installed, schema changed) falls back to the
-		// original plain-Markdown handoff rather than failing outright.
+		// Writing directly into Antigravity's local conversation store
+		// (conversation_summaries.db + a matching conversations/<id>.db)
+		// was tried and shipped, then found to be unreliable: Antigravity
+		// CLI's own /resume documentation confirms `--conversation` queries
+		// Google's backend to verify a trajectory before loading it, and a
+		// locally-injected conversation was never registered there. Real
+		// resume worked once against an already-backend-registered
+		// conversation but failed deterministically for every freshly
+		// injected one, confirmed via live testing against a real install
+		// and independently corroborated by a separate open-source
+		// cross-tool handoff project's own notes on Antigravity needing
+		// "optional live RPC." Plain Markdown-paste is the reliable path.
 		path, err = writeAntigravityHandoff(messages)
 		if err != nil {
 			return "", "", nil, "", err
